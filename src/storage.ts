@@ -1,14 +1,34 @@
-import { STEPS, TRACK_COUNT, type DrumPattern, type SynthPattern, type Waveform } from "./audio";
+import {
+  DEFAULT_DRUM_VOLUMES,
+  DEFAULT_STEPS,
+  DEFAULT_SYNTH_VOLUME,
+  DRUM_TRACKS,
+  type DrumPattern,
+  type SynthPattern,
+  type SynthTrack,
+  type Waveform,
+} from "./audio";
 
 const DB_NAME = "pocket-loop";
 const DB_VERSION = 1;
 const STORE_NAME = "projects";
 const CURRENT_KEY = "current";
 
-export const PROJECT_VERSION = 1;
+export const PROJECT_VERSION = 2;
 
 export interface Project {
   version: typeof PROJECT_VERSION;
+  steps: number;
+  bpm: number;
+  drumPattern: DrumPattern;
+  synthTracks: SynthTrack[];
+  volumes: Record<string, number>;
+  mutes: Record<string, boolean>;
+}
+
+/** フェーズ1(シンセ1トラック固定)で保存されたデータの形 */
+interface ProjectV1 {
+  version: 1;
   bpm: number;
   drumPattern: DrumPattern;
   synthPattern: SynthPattern;
@@ -28,22 +48,59 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-/** 保存データの形が壊れていないか最低限確認する(破損時は読み込まない) */
-function isValidProject(data: unknown): data is Project {
+function isValidV2(data: unknown): data is Project {
   if (!data || typeof data !== "object") return false;
   const p = data as Project;
   return (
     p.version === PROJECT_VERSION &&
+    typeof p.steps === "number" &&
     typeof p.bpm === "number" &&
     Array.isArray(p.drumPattern) &&
-    p.drumPattern.every((row) => Array.isArray(row) && row.length === STEPS) &&
-    Array.isArray(p.synthPattern) &&
-    p.synthPattern.length === STEPS &&
-    Array.isArray(p.volumes) &&
-    p.volumes.length === TRACK_COUNT &&
-    Array.isArray(p.mutes) &&
-    p.mutes.length === TRACK_COUNT
+    p.drumPattern.length === DRUM_TRACKS.length &&
+    p.drumPattern.every((row) => Array.isArray(row) && row.length === p.steps) &&
+    Array.isArray(p.synthTracks) &&
+    p.synthTracks.every(
+      (t) => t && typeof t.id === "string" && Array.isArray(t.pattern) && t.pattern.length === p.steps,
+    ) &&
+    typeof p.volumes === "object" &&
+    typeof p.mutes === "object"
   );
+}
+
+function isValidV1(data: unknown): data is ProjectV1 {
+  if (!data || typeof data !== "object") return false;
+  const p = data as ProjectV1;
+  return (
+    p.version === 1 &&
+    typeof p.bpm === "number" &&
+    Array.isArray(p.drumPattern) &&
+    Array.isArray(p.synthPattern) &&
+    Array.isArray(p.volumes) &&
+    Array.isArray(p.mutes)
+  );
+}
+
+/** フェーズ1の保存データ(シンセ1トラック固定)を、フェーズ2の形(複数シンセトラック)へ変換する */
+function migrateV1(v1: ProjectV1): Project {
+  const synthId = "synth-migrated";
+  const volumes: Record<string, number> = {};
+  const mutes: Record<string, boolean> = {};
+  DRUM_TRACKS.forEach((_, i) => {
+    volumes[`drum${i}`] = v1.volumes[i] ?? DEFAULT_DRUM_VOLUMES[`drum${i}`];
+    mutes[`drum${i}`] = v1.mutes[i] ?? false;
+  });
+  volumes[synthId] = v1.volumes[DRUM_TRACKS.length] ?? DEFAULT_SYNTH_VOLUME;
+  mutes[synthId] = v1.mutes[DRUM_TRACKS.length] ?? false;
+
+  return {
+    version: PROJECT_VERSION,
+    steps: DEFAULT_STEPS,
+    bpm: v1.bpm,
+    drumPattern: v1.drumPattern,
+    synthTracks: [{ id: synthId, name: "シンセ", waveform: v1.synthWaveform, pattern: v1.synthPattern }],
+    volumes,
+    mutes,
+  };
 }
 
 /** 保存されたプロジェクトを読み込む。未保存・読み込み失敗時は null を返す */
@@ -57,7 +114,9 @@ export async function loadProject(): Promise<Project | null> {
       req.onerror = () => reject(req.error);
     });
     db.close();
-    return isValidProject(data) ? data : null;
+    if (isValidV2(data)) return data;
+    if (isValidV1(data)) return migrateV1(data);
+    return null;
   } catch {
     return null;
   }

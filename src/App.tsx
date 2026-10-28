@@ -2,21 +2,24 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Tone from "tone";
 import {
   AudioEngine,
+  DEFAULT_STEPS,
+  DRUM_CHANNEL_KEYS,
   DRUM_TRACKS,
+  MAX_SYNTH_TRACKS,
   SCALE,
-  SYNTH_TRACK_NAME,
-  TRACK_NAMES,
+  STEP_OPTIONS,
   WAVEFORMS,
   WAVEFORM_LABELS,
   defaultDrumPattern,
-  defaultMutes,
-  defaultSynthPattern,
-  defaultVolumes,
+  defaultSynthTrack,
   emptyDrumPattern,
   emptySynthPattern,
+  resizeDrumPattern,
+  resizeSynthPattern,
   type DrumPattern,
   type Note,
-  type SynthPattern,
+  type StepCount,
+  type SynthTrack,
   type Waveform,
 } from "./audio";
 import { loadProject, saveProject, PROJECT_VERSION, type Project } from "./storage";
@@ -30,12 +33,18 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [bpm, setBpm] = useState(120);
+  const [steps, setSteps] = useState<number>(DEFAULT_STEPS);
   const [drumPattern, setDrumPattern] = useState<DrumPattern>(defaultDrumPattern);
-  const [synthPattern, setSynthPattern] = useState<SynthPattern>(defaultSynthPattern);
-  const [synthWaveform, setSynthWaveform] = useState<Waveform>("sawtooth");
-  const [volumes, setVolumes] = useState<number[]>(defaultVolumes);
-  const [mutes, setMutes] = useState<boolean[]>(defaultMutes);
-  const [selectedNote, setSelectedNote] = useState<Note>("C4");
+  const [synthTracks, setSynthTracks] = useState<SynthTrack[]>(() => [defaultSynthTrack("シンセ")]);
+  const [volumes, setVolumes] = useState<Record<string, number>>(() =>
+    Object.fromEntries(synthTracks.map((t) => [t.id, 75])),
+  );
+  const [mutes, setMutes] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(synthTracks.map((t) => [t.id, false])),
+  );
+  const [selectedNotes, setSelectedNotes] = useState<Record<string, Note>>(() =>
+    Object.fromEntries(synthTracks.map((t) => [t.id, "C4" as Note])),
+  );
   const [showMixer, setShowMixer] = useState(false);
   const [current, setCurrent] = useState(-1);
   const [latencyInfo, setLatencyInfo] = useState("");
@@ -43,21 +52,28 @@ export default function App() {
   const loaded = useRef(false);
   const [restored, setRestored] = useState(false);
 
-  // 起動時に保存済みプロジェクトを読み込む
+  // 起動時に保存済みプロジェクトを読み込み、音声エンジンへシンセトラックを登録する
   useEffect(() => {
     (async () => {
       const project = await loadProject();
+      let finalTracks = synthTracks;
       if (project) {
         setBpm(project.bpm);
+        setSteps(project.steps);
         setDrumPattern(project.drumPattern);
-        setSynthPattern(project.synthPattern);
-        setSynthWaveform(project.synthWaveform);
+        setSynthTracks(project.synthTracks);
         setVolumes(project.volumes);
         setMutes(project.mutes);
+        const notes: Record<string, Note> = {};
+        project.synthTracks.forEach((t) => (notes[t.id] = "C4"));
+        setSelectedNotes(notes);
+        finalTracks = project.synthTracks;
       }
+      finalTracks.forEach((t) => engine.addSynthTrack(t.id, t.waveform, t.pattern));
       loaded.current = true;
       setRestored(true);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -65,14 +81,19 @@ export default function App() {
     return () => engine.setStepListener(null);
   }, [engine]);
 
+  useEffect(() => engine.setSteps(steps), [engine, steps]);
   useEffect(() => engine.setDrumPattern(drumPattern), [engine, drumPattern]);
-  useEffect(() => engine.setSynthPattern(synthPattern), [engine, synthPattern]);
-  useEffect(() => engine.setWaveform(synthWaveform), [engine, synthWaveform]);
   useEffect(() => {
-    volumes.forEach((v, i) => engine.setVolume(i, v));
+    synthTracks.forEach((t) => {
+      engine.setSynthPattern(t.id, t.pattern);
+      engine.setSynthWaveform(t.id, t.waveform);
+    });
+  }, [engine, synthTracks]);
+  useEffect(() => {
+    Object.entries(volumes).forEach(([k, v]) => engine.setVolume(k, v));
   }, [engine, volumes]);
   useEffect(() => {
-    mutes.forEach((m, i) => engine.setMute(i, m));
+    Object.entries(mutes).forEach(([k, m]) => engine.setMute(k, m));
   }, [engine, mutes]);
   useEffect(() => {
     if (ready) engine.setBpm(bpm);
@@ -83,16 +104,16 @@ export default function App() {
     if (!loaded.current) return;
     const project: Project = {
       version: PROJECT_VERSION,
+      steps,
       bpm,
       drumPattern,
-      synthPattern,
-      synthWaveform,
+      synthTracks,
       volumes,
       mutes,
     };
     const timer = setTimeout(() => saveProject(project), SAVE_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [bpm, drumPattern, synthPattern, synthWaveform, volumes, mutes]);
+  }, [steps, bpm, drumPattern, synthTracks, volumes, mutes]);
 
   // 画面が隠れたら停止する(バックグラウンドでは音声が止まるため状態を揃える)
   useEffect(() => {
@@ -138,21 +159,72 @@ export default function App() {
     setDrumPattern((prev) => prev.map((row, i) => (i === t ? row.map((v, j) => (j === s ? !v : v)) : row)));
   };
 
-  const toggleSynthStep = (s: number) => {
-    setSynthPattern((prev) => prev.map((n, j) => (j === s ? (n === selectedNote ? null : selectedNote) : n)));
+  const toggleSynthStep = (trackId: string, s: number) => {
+    const note = selectedNotes[trackId] ?? "C4";
+    setSynthTracks((prev) =>
+      prev.map((t) =>
+        t.id === trackId ? { ...t, pattern: t.pattern.map((n, j) => (j === s ? (n === note ? null : note) : n)) } : t,
+      ),
+    );
+  };
+
+  const selectNote = (trackId: string, note: Note) => {
+    setSelectedNotes((prev) => ({ ...prev, [trackId]: note }));
+  };
+
+  const setSynthWaveform = (trackId: string, waveform: Waveform) => {
+    setSynthTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, waveform } : t)));
+  };
+
+  const addSynthTrack = () => {
+    if (synthTracks.length >= MAX_SYNTH_TRACKS) return;
+    const track = defaultSynthTrack(`シンセ${synthTracks.length + 1}`);
+    const resized = { ...track, pattern: resizeSynthPattern(track.pattern, steps) };
+    engine.addSynthTrack(resized.id, resized.waveform, resized.pattern);
+    setSynthTracks((prev) => [...prev, resized]);
+    setVolumes((prev) => ({ ...prev, [resized.id]: 75 }));
+    setMutes((prev) => ({ ...prev, [resized.id]: false }));
+    setSelectedNotes((prev) => ({ ...prev, [resized.id]: "C4" }));
+  };
+
+  const removeSynthTrack = (trackId: string) => {
+    engine.removeSynthTrack(trackId);
+    setSynthTracks((prev) => prev.filter((t) => t.id !== trackId));
+    setVolumes((prev) => {
+      const next = { ...prev };
+      delete next[trackId];
+      return next;
+    });
+    setMutes((prev) => {
+      const next = { ...prev };
+      delete next[trackId];
+      return next;
+    });
+    setSelectedNotes((prev) => {
+      const next = { ...prev };
+      delete next[trackId];
+      return next;
+    });
+  };
+
+  const setQuantize = (next: StepCount) => {
+    if (next === steps) return;
+    setDrumPattern((prev) => resizeDrumPattern(prev, next));
+    setSynthTracks((prev) => prev.map((t) => ({ ...t, pattern: resizeSynthPattern(t.pattern, next) })));
+    setSteps(next);
   };
 
   const clearAll = () => {
-    setDrumPattern(emptyDrumPattern());
-    setSynthPattern(emptySynthPattern());
+    setDrumPattern(emptyDrumPattern(steps));
+    setSynthTracks((prev) => prev.map((t) => ({ ...t, pattern: emptySynthPattern(steps) })));
   };
 
-  const setVolume = (i: number, v: number) => {
-    setVolumes((prev) => prev.map((x, j) => (j === i ? v : x)));
+  const setVolume = (key: string, v: number) => {
+    setVolumes((prev) => ({ ...prev, [key]: v }));
   };
 
-  const setMute = (i: number) => {
-    setMutes((prev) => prev.map((x, j) => (j === i ? !x : x)));
+  const setMute = (key: string) => {
+    setMutes((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   return (
@@ -209,40 +281,70 @@ export default function App() {
           </section>
         ))}
 
-        <section className="track">
-          <h2 className="track-name">{SYNTH_TRACK_NAME}</h2>
-          <div className="note-picker">
-            {SCALE.map((n) => (
+        {synthTracks.map((track) => (
+          <section className="track" key={track.id}>
+            <div className="synth-track-header">
+              <h2 className="track-name">{track.name}</h2>
+              <div className="segmented mini">
+                {WAVEFORMS.map((w) => (
+                  <button
+                    key={w}
+                    className={"segmented-btn" + (w === track.waveform ? " is-selected" : "")}
+                    onClick={() => setSynthWaveform(track.id, w)}
+                    aria-pressed={w === track.waveform}
+                    aria-label={`${track.name} 波形 ${WAVEFORM_LABELS[w]}`}
+                  >
+                    {WAVEFORM_LABELS[w].slice(0, 2)}
+                  </button>
+                ))}
+              </div>
               <button
-                key={n}
-                className={"note" + (n === selectedNote ? " is-selected" : "")}
-                onClick={() => setSelectedNote(n)}
-                aria-label={`音階 ${n}`}
-                aria-pressed={n === selectedNote}
+                className="remove-btn"
+                onClick={() => removeSynthTrack(track.id)}
+                aria-label={`${track.name} を削除`}
               >
-                {n.replace("4", "").replace("5", "'")}
+                ✕
               </button>
-            ))}
-          </div>
-          <div className="grid">
-            {synthPattern.map((note, s) => (
-              <button
-                key={s}
-                className={
-                  "step" +
-                  (note ? " is-on" : "") +
-                  (s % 4 === 0 ? " is-beat" : "") +
-                  (s === current ? " is-current" : "")
-                }
-                onClick={() => toggleSynthStep(s)}
-                aria-label={`${SYNTH_TRACK_NAME} ${s + 1}${note ? ` ${note}` : ""}`}
-                aria-pressed={!!note}
-              >
-                {note ? note.replace("4", "").replace("5", "'") : ""}
-              </button>
-            ))}
-          </div>
-        </section>
+            </div>
+            <div className="note-picker">
+              {SCALE.map((n) => (
+                <button
+                  key={n}
+                  className={"note" + (n === selectedNotes[track.id] ? " is-selected" : "")}
+                  onClick={() => selectNote(track.id, n)}
+                  aria-label={`${track.name} 音階 ${n}`}
+                  aria-pressed={n === selectedNotes[track.id]}
+                >
+                  {n.replace("5", "'")}
+                </button>
+              ))}
+            </div>
+            <div className="grid">
+              {track.pattern.map((note, s) => (
+                <button
+                  key={s}
+                  className={
+                    "step" +
+                    (note ? " is-on" : "") +
+                    (s % 4 === 0 ? " is-beat" : "") +
+                    (s === current ? " is-current" : "")
+                  }
+                  onClick={() => toggleSynthStep(track.id, s)}
+                  aria-label={`${track.name} ${s + 1}${note ? ` ${note}` : ""}`}
+                  aria-pressed={!!note}
+                >
+                  {note ? note.replace("5", "'") : ""}
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+
+        {synthTracks.length < MAX_SYNTH_TRACKS && (
+          <button className="ghost add-track" onClick={addSynthTrack}>
+            + シンセを追加
+          </button>
+        )}
       </main>
 
       <footer className="footer">
@@ -250,7 +352,7 @@ export default function App() {
           全消去
         </button>
         <p className="info">
-          {latencyInfo || "フェーズ1:MVP(保存・音量/ミュート・シンセ入力に対応)"}
+          {latencyInfo || "フェーズ2:ピアノロール(複数シンセトラック・クオンタイズ)に対応"}
           {restored ? "" : " / 読込中…"}
         </p>
       </footer>
@@ -264,7 +366,24 @@ export default function App() {
                 閉じる
               </button>
             </div>
-            {TRACK_NAMES.map((name, i) => (
+
+            <div className="mixer-row quantize-row">
+              <span className="mixer-name">クオンタイズ</span>
+              <div className="segmented">
+                {STEP_OPTIONS.map((n) => (
+                  <button
+                    key={n}
+                    className={"segmented-btn" + (n === steps ? " is-selected" : "")}
+                    onClick={() => setQuantize(n)}
+                    aria-pressed={n === steps}
+                  >
+                    1/{n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {DRUM_TRACKS.map((name, i) => (
               <div className="mixer-row" key={name}>
                 <span className="mixer-name">{name}</span>
                 <input
@@ -272,35 +391,43 @@ export default function App() {
                   type="range"
                   min={0}
                   max={100}
-                  value={volumes[i]}
-                  onChange={(e) => setVolume(i, Number(e.target.value))}
+                  value={volumes[DRUM_CHANNEL_KEYS[i]] ?? 0}
+                  onChange={(e) => setVolume(DRUM_CHANNEL_KEYS[i], Number(e.target.value))}
                   aria-label={`${name} 音量`}
                 />
                 <button
-                  className={"mute-btn" + (mutes[i] ? " is-muted" : "")}
-                  onClick={() => setMute(i)}
+                  className={"mute-btn" + (mutes[DRUM_CHANNEL_KEYS[i]] ? " is-muted" : "")}
+                  onClick={() => setMute(DRUM_CHANNEL_KEYS[i])}
                   aria-label={`${name} ミュート`}
-                  aria-pressed={mutes[i]}
+                  aria-pressed={!!mutes[DRUM_CHANNEL_KEYS[i]]}
                 >
                   M
                 </button>
               </div>
             ))}
-            <div className="mixer-row waveform-row">
-              <span className="mixer-name">シンセ波形</span>
-              <div className="waveform-group">
-                {WAVEFORMS.map((w) => (
-                  <button
-                    key={w}
-                    className={"waveform-btn" + (w === synthWaveform ? " is-selected" : "")}
-                    onClick={() => setSynthWaveform(w)}
-                    aria-pressed={w === synthWaveform}
-                  >
-                    {WAVEFORM_LABELS[w]}
-                  </button>
-                ))}
+
+            {synthTracks.map((track) => (
+              <div className="mixer-row" key={track.id}>
+                <span className="mixer-name">{track.name}</span>
+                <input
+                  className="mixer-slider"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={volumes[track.id] ?? 0}
+                  onChange={(e) => setVolume(track.id, Number(e.target.value))}
+                  aria-label={`${track.name} 音量`}
+                />
+                <button
+                  className={"mute-btn" + (mutes[track.id] ? " is-muted" : "")}
+                  onClick={() => setMute(track.id)}
+                  aria-label={`${track.name} ミュート`}
+                  aria-pressed={!!mutes[track.id]}
+                >
+                  M
+                </button>
               </div>
-            </div>
+            ))}
           </div>
         </div>
       )}

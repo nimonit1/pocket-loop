@@ -248,15 +248,17 @@ button {
   color: #ffffff;
 }
 
-.waveform-row {
+.quantize-row {
   border-bottom: 0;
 }
-.waveform-group {
+
+/* 複数の選択肢から1つを選ぶ共通コントロール(波形・クオンタイズで使用) */
+.segmented {
   flex: 1;
   display: flex;
   gap: 6px;
 }
-.waveform-btn {
+.segmented-btn {
   flex: 1;
   height: var(--tap);
   border: 1px solid var(--primary);
@@ -266,9 +268,44 @@ button {
   font-size: 13px;
   font-weight: 700;
 }
-.waveform-btn.is-selected {
+.segmented-btn.is-selected {
   background: var(--primary);
   color: #ffffff;
+}
+.segmented.mini {
+  gap: 4px;
+}
+.segmented.mini .segmented-btn {
+  height: 28px;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+/* シンセトラックのヘッダー(名前・波形・削除) */
+.synth-track-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.synth-track-header .track-name {
+  margin: 0;
+  flex-shrink: 0;
+}
+.remove-btn {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: #ffffff;
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 700;
+}
+.add-track {
+  width: 100%;
+  margin-top: 4px;
 }
 
 .footer {
