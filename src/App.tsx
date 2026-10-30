@@ -12,6 +12,7 @@ import {
   WAVEFORM_LABELS,
   defaultDrumPattern,
   defaultSynthTrack,
+  defaultTrackEffects,
   emptyDrumPattern,
   emptySynthPattern,
   resizeDrumPattern,
@@ -20,6 +21,7 @@ import {
   type Note,
   type StepCount,
   type SynthTrack,
+  type TrackEffects,
   type Waveform,
 } from "./audio";
 import { loadProject, saveProject, PROJECT_VERSION, type Project } from "./storage";
@@ -45,6 +47,10 @@ export default function App() {
   const [selectedNotes, setSelectedNotes] = useState<Record<string, Note>>(() =>
     Object.fromEntries(synthTracks.map((t) => [t.id, "C4" as Note])),
   );
+  const [effects, setEffects] = useState<Record<string, TrackEffects>>(() =>
+    Object.fromEntries(synthTracks.map((t) => [t.id, defaultTrackEffects()])),
+  );
+  const [expandedTracks, setExpandedTracks] = useState<Set<string>>(() => new Set());
   const [showMixer, setShowMixer] = useState(false);
   const [current, setCurrent] = useState(-1);
   const [latencyInfo, setLatencyInfo] = useState("");
@@ -64,6 +70,7 @@ export default function App() {
         setSynthTracks(project.synthTracks);
         setVolumes(project.volumes);
         setMutes(project.mutes);
+        setEffects(project.effects);
         const notes: Record<string, Note> = {};
         project.synthTracks.forEach((t) => (notes[t.id] = "C4"));
         setSelectedNotes(notes);
@@ -96,6 +103,16 @@ export default function App() {
     Object.entries(mutes).forEach(([k, m]) => engine.setMute(k, m));
   }, [engine, mutes]);
   useEffect(() => {
+    Object.entries(effects).forEach(([k, fx]) => {
+      engine.setPan(k, fx.pan);
+      engine.setEq(k, "eqLow", fx.eqLow);
+      engine.setEq(k, "eqMid", fx.eqMid);
+      engine.setEq(k, "eqHigh", fx.eqHigh);
+      engine.setReverbSend(k, fx.reverbSend);
+      engine.setDelaySend(k, fx.delaySend);
+    });
+  }, [engine, effects]);
+  useEffect(() => {
     if (ready) engine.setBpm(bpm);
   }, [engine, ready, bpm]);
 
@@ -110,10 +127,11 @@ export default function App() {
       synthTracks,
       volumes,
       mutes,
+      effects,
     };
     const timer = setTimeout(() => saveProject(project), SAVE_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [steps, bpm, drumPattern, synthTracks, volumes, mutes]);
+  }, [steps, bpm, drumPattern, synthTracks, volumes, mutes, effects]);
 
   // 画面が隠れたら停止する(バックグラウンドでは音声が止まるため状態を揃える)
   useEffect(() => {
@@ -185,6 +203,7 @@ export default function App() {
     setVolumes((prev) => ({ ...prev, [resized.id]: 75 }));
     setMutes((prev) => ({ ...prev, [resized.id]: false }));
     setSelectedNotes((prev) => ({ ...prev, [resized.id]: "C4" }));
+    setEffects((prev) => ({ ...prev, [resized.id]: defaultTrackEffects() }));
   };
 
   const removeSynthTrack = (trackId: string) => {
@@ -203,6 +222,16 @@ export default function App() {
     setSelectedNotes((prev) => {
       const next = { ...prev };
       delete next[trackId];
+      return next;
+    });
+    setEffects((prev) => {
+      const next = { ...prev };
+      delete next[trackId];
+      return next;
+    });
+    setExpandedTracks((prev) => {
+      const next = new Set(prev);
+      next.delete(trackId);
       return next;
     });
   };
@@ -225,6 +254,126 @@ export default function App() {
 
   const setMute = (key: string) => {
     setMutes((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const updateEffect = (key: string, patch: Partial<TrackEffects>) => {
+    setEffects((prev) => ({ ...prev, [key]: { ...(prev[key] ?? defaultTrackEffects()), ...patch } }));
+  };
+
+  const toggleExpanded = (key: string) => {
+    setExpandedTracks((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const renderMixerRow = (key: string, label: string) => {
+    const fx = effects[key] ?? defaultTrackEffects();
+    const expanded = expandedTracks.has(key);
+    return (
+      <div className="mixer-track" key={key}>
+        <div className="mixer-row">
+          <span className="mixer-name">{label}</span>
+          <input
+            className="mixer-slider"
+            type="range"
+            min={0}
+            max={100}
+            value={volumes[key] ?? 0}
+            onChange={(e) => setVolume(key, Number(e.target.value))}
+            aria-label={`${label} 音量`}
+          />
+          <button
+            className={"mute-btn" + (mutes[key] ? " is-muted" : "")}
+            onClick={() => setMute(key)}
+            aria-label={`${label} ミュート`}
+            aria-pressed={!!mutes[key]}
+          >
+            M
+          </button>
+          <button
+            className="expand-btn"
+            onClick={() => toggleExpanded(key)}
+            aria-label={`${label} エフェクト詳細`}
+            aria-expanded={expanded}
+          >
+            {expanded ? "▴" : "▾"}
+          </button>
+        </div>
+        {expanded && (
+          <div className="mixer-detail">
+            <label className="detail-row">
+              <span>パン</span>
+              <input
+                type="range"
+                min={-100}
+                max={100}
+                value={fx.pan}
+                onChange={(e) => updateEffect(key, { pan: Number(e.target.value) })}
+                aria-label={`${label} パン`}
+              />
+            </label>
+            <label className="detail-row">
+              <span>低音</span>
+              <input
+                type="range"
+                min={-12}
+                max={12}
+                value={fx.eqLow}
+                onChange={(e) => updateEffect(key, { eqLow: Number(e.target.value) })}
+                aria-label={`${label} 低音`}
+              />
+            </label>
+            <label className="detail-row">
+              <span>中音</span>
+              <input
+                type="range"
+                min={-12}
+                max={12}
+                value={fx.eqMid}
+                onChange={(e) => updateEffect(key, { eqMid: Number(e.target.value) })}
+                aria-label={`${label} 中音`}
+              />
+            </label>
+            <label className="detail-row">
+              <span>高音</span>
+              <input
+                type="range"
+                min={-12}
+                max={12}
+                value={fx.eqHigh}
+                onChange={(e) => updateEffect(key, { eqHigh: Number(e.target.value) })}
+                aria-label={`${label} 高音`}
+              />
+            </label>
+            <label className="detail-row">
+              <span>リバーブ</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={fx.reverbSend}
+                onChange={(e) => updateEffect(key, { reverbSend: Number(e.target.value) })}
+                aria-label={`${label} リバーブ`}
+              />
+            </label>
+            <label className="detail-row">
+              <span>ディレイ</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={fx.delaySend}
+                onChange={(e) => updateEffect(key, { delaySend: Number(e.target.value) })}
+                aria-label={`${label} ディレイ`}
+              />
+            </label>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -352,7 +501,7 @@ export default function App() {
           全消去
         </button>
         <p className="info">
-          {latencyInfo || "フェーズ2:ピアノロール(複数シンセトラック・クオンタイズ)に対応"}
+          {latencyInfo || "フェーズ3:ミキサー(パン・EQ・リバーブ/ディレイ)に対応"}
           {restored ? "" : " / 読込中…"}
         </p>
       </footer>
@@ -383,51 +532,8 @@ export default function App() {
               </div>
             </div>
 
-            {DRUM_TRACKS.map((name, i) => (
-              <div className="mixer-row" key={name}>
-                <span className="mixer-name">{name}</span>
-                <input
-                  className="mixer-slider"
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={volumes[DRUM_CHANNEL_KEYS[i]] ?? 0}
-                  onChange={(e) => setVolume(DRUM_CHANNEL_KEYS[i], Number(e.target.value))}
-                  aria-label={`${name} 音量`}
-                />
-                <button
-                  className={"mute-btn" + (mutes[DRUM_CHANNEL_KEYS[i]] ? " is-muted" : "")}
-                  onClick={() => setMute(DRUM_CHANNEL_KEYS[i])}
-                  aria-label={`${name} ミュート`}
-                  aria-pressed={!!mutes[DRUM_CHANNEL_KEYS[i]]}
-                >
-                  M
-                </button>
-              </div>
-            ))}
-
-            {synthTracks.map((track) => (
-              <div className="mixer-row" key={track.id}>
-                <span className="mixer-name">{track.name}</span>
-                <input
-                  className="mixer-slider"
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={volumes[track.id] ?? 0}
-                  onChange={(e) => setVolume(track.id, Number(e.target.value))}
-                  aria-label={`${track.name} 音量`}
-                />
-                <button
-                  className={"mute-btn" + (mutes[track.id] ? " is-muted" : "")}
-                  onClick={() => setMute(track.id)}
-                  aria-label={`${track.name} ミュート`}
-                  aria-pressed={!!mutes[track.id]}
-                >
-                  M
-                </button>
-              </div>
-            ))}
+            {DRUM_TRACKS.map((name, i) => renderMixerRow(DRUM_CHANNEL_KEYS[i], name))}
+            {synthTracks.map((track) => renderMixerRow(track.id, track.name))}
           </div>
         </div>
       )}
