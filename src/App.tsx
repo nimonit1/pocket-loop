@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Tone from "tone";
 import {
   AudioEngine,
+  DEFAULT_DRUM_VOLUMES,
   DEFAULT_STEPS,
+  DEFAULT_SYNTH_VOLUME,
   DRUM_CHANNEL_KEYS,
   DRUM_TRACKS,
   MAX_SYNTH_TRACKS,
@@ -29,6 +31,11 @@ import { loadProject, saveProject, PROJECT_VERSION, type Project } from "./stora
 const MIN_BPM = 60;
 const MAX_BPM = 200;
 const SAVE_DELAY_MS = 500;
+const DOUBLE_TAP_MS = 350;
+
+function defaultVolumeFor(key: string): number {
+  return DEFAULT_DRUM_VOLUMES[key] ?? DEFAULT_SYNTH_VOLUME;
+}
 
 export default function App() {
   const engine = useMemo(() => new AudioEngine(), []);
@@ -56,6 +63,7 @@ export default function App() {
   const [latencyInfo, setLatencyInfo] = useState("");
   const busy = useRef(false);
   const loaded = useRef(false);
+  const lastTapRef = useRef<Map<string, number>>(new Map());
   const [restored, setRestored] = useState(false);
 
   // 起動時に保存済みプロジェクトを読み込み、音声エンジンへシンセトラックを登録する
@@ -260,6 +268,18 @@ export default function App() {
     setEffects((prev) => ({ ...prev, [key]: { ...(prev[key] ?? defaultTrackEffects()), ...patch } }));
   };
 
+  // スライダーをすばやく2回タップ(クリック)したら、初期値に戻す
+  const handleDoubleTap = (id: string, reset: () => void) => {
+    const now = Date.now();
+    const last = lastTapRef.current.get(id) ?? 0;
+    if (now - last < DOUBLE_TAP_MS) {
+      reset();
+      lastTapRef.current.delete(id);
+    } else {
+      lastTapRef.current.set(id, now);
+    }
+  };
+
   const toggleExpanded = (key: string) => {
     setExpandedTracks((prev) => {
       const next = new Set(prev);
@@ -283,7 +303,8 @@ export default function App() {
             max={100}
             value={volumes[key] ?? 0}
             onChange={(e) => setVolume(key, Number(e.target.value))}
-            aria-label={`${label} 音量`}
+            onClick={() => handleDoubleTap(`vol-${key}`, () => setVolume(key, defaultVolumeFor(key)))}
+            aria-label={`${label} 音量(すばやく2回タップで初期値)`}
           />
           <button
             className={"mute-btn" + (mutes[key] ? " is-muted" : "")}
@@ -312,7 +333,8 @@ export default function App() {
                 max={100}
                 value={fx.pan}
                 onChange={(e) => updateEffect(key, { pan: Number(e.target.value) })}
-                aria-label={`${label} パン`}
+                onClick={() => handleDoubleTap(`pan-${key}`, () => updateEffect(key, { pan: 0 }))}
+                aria-label={`${label} パン(すばやく2回タップで初期値)`}
               />
             </label>
             <label className="detail-row">
@@ -323,7 +345,8 @@ export default function App() {
                 max={12}
                 value={fx.eqLow}
                 onChange={(e) => updateEffect(key, { eqLow: Number(e.target.value) })}
-                aria-label={`${label} 低音`}
+                onClick={() => handleDoubleTap(`eqLow-${key}`, () => updateEffect(key, { eqLow: 0 }))}
+                aria-label={`${label} 低音(すばやく2回タップで初期値)`}
               />
             </label>
             <label className="detail-row">
@@ -334,7 +357,8 @@ export default function App() {
                 max={12}
                 value={fx.eqMid}
                 onChange={(e) => updateEffect(key, { eqMid: Number(e.target.value) })}
-                aria-label={`${label} 中音`}
+                onClick={() => handleDoubleTap(`eqMid-${key}`, () => updateEffect(key, { eqMid: 0 }))}
+                aria-label={`${label} 中音(すばやく2回タップで初期値)`}
               />
             </label>
             <label className="detail-row">
@@ -345,7 +369,8 @@ export default function App() {
                 max={12}
                 value={fx.eqHigh}
                 onChange={(e) => updateEffect(key, { eqHigh: Number(e.target.value) })}
-                aria-label={`${label} 高音`}
+                onClick={() => handleDoubleTap(`eqHigh-${key}`, () => updateEffect(key, { eqHigh: 0 }))}
+                aria-label={`${label} 高音(すばやく2回タップで初期値)`}
               />
             </label>
             <label className="detail-row">
@@ -356,7 +381,8 @@ export default function App() {
                 max={100}
                 value={fx.reverbSend}
                 onChange={(e) => updateEffect(key, { reverbSend: Number(e.target.value) })}
-                aria-label={`${label} リバーブ`}
+                onClick={() => handleDoubleTap(`reverb-${key}`, () => updateEffect(key, { reverbSend: 0 }))}
+                aria-label={`${label} リバーブ(すばやく2回タップで初期値)`}
               />
             </label>
             <label className="detail-row">
@@ -367,7 +393,8 @@ export default function App() {
                 max={100}
                 value={fx.delaySend}
                 onChange={(e) => updateEffect(key, { delaySend: Number(e.target.value) })}
-                aria-label={`${label} ディレイ`}
+                onClick={() => handleDoubleTap(`delay-${key}`, () => updateEffect(key, { delaySend: 0 }))}
+                aria-label={`${label} ディレイ(すばやく2回タップで初期値)`}
               />
             </label>
           </div>
@@ -515,6 +542,7 @@ export default function App() {
                 閉じる
               </button>
             </div>
+            <p className="sheet-hint">スライダーをすばやく2回タップすると、初期値に戻ります</p>
 
             <div className="mixer-row quantize-row">
               <span className="mixer-name">クオンタイズ</span>
